@@ -65,7 +65,8 @@
       <plugin>
         <groupId>io.gatling</groupId>
         <artifactId>gatling-maven-plugin</artifactId>
-        <version>${gatling-maven-plugin.version}</version>
+<!--        <version>${gatling-maven-plugin.version}</version>-->
+        <version>4.3.0</version>
         <configuration>
 <!--          <runMultipleSimulations>true</runMultipleSimulations>-->
           <includes>
