@@ -1,23 +1,27 @@
 package demostore
 
-
+import demostore.pageObjects._
 import io.gatling.core.Predef._
 import io.gatling.http.Predef._
 
+import scala.concurrent.duration.DurationInt
 import scala.util.Random
 
 class RecordedDemostore extends Simulation {
 
   val DOMAIN = "demostore.gatling.io"
-
   private val httpProtocol = http
     .baseUrl(s"http://${DOMAIN}")
 
-  val categoryFeeder = csv("data/category.csv").random
+  def userCount = getProperty("USERS", "10").toInt
+  def rampDuration = getProperty("RAMP_DURATION", "10").toInt
+  def testDuration = getProperty("TEST_DURATION", "40").toInt
 
-  val jsonFeeder = jsonFile("data/jsonProducts.json").random
-
-  val loginFeeder = csv("data/loginDetails.csv").circular
+  private def getProperty(propertyName: String, defaultValue: String) = {
+    Option(System.getenv(propertyName))
+      .orElse(Option(System.getProperty(propertyName)))
+      .getOrElse(defaultValue)
+  }
 
   val rnd = new Random()
 
@@ -25,105 +29,22 @@ class RecordedDemostore extends Simulation {
     rnd.alphanumeric.filter(_.isLetter).take(length).mkString
   }
 
+  before {
+    println(s"Running simulation with:\n ${userCount} users \n ${rampDuration} ramp duration \n ${testDuration} test duration")
+  }
+
+  after {
+    println("Test complete!")
+  }
+
   val initSession = exec(flushCookieJar)
     .exec(session => session.set("randomNumber", rnd.nextInt()))
     .exec(session => session.set("customerLoggedIn", false))
     .exec(session => session.set("cartTotal", 0.00))
     .exec(addCookie(Cookie("sessionId", rndString(20)).withDomain(DOMAIN)))
-//    .exec { session => println(session); session }
+  //    .exec { session => println(session); session }
 
-  object CmsPages {
-    def homePage = {
-      exec(
-        http("Load Home Page")
-          .get("/")
-          .check(regex("<title>Gatling Demo-Store</title>").exists)
-          .check(css("#_csrf", "content").saveAs("csrfValue"))
-      )
-    }
-
-    def aboutUsPage = {
-      exec(
-        http("Load About Us")
-          .get("/about-us")
-          .check(substring("About Us"))
-      )
-    }
-  }
-
-
-  object Catalog {
-    object Category {
-      def view = {
-        feed(categoryFeeder)
-          .exec(http("Load Category #{categoryName}")
-            .get("/category/#{categorySlug}")
-            .check(css("#CategoryName").is("#{categoryName}")))
-      }
-    }
-
-    object Product {
-      def view = {
-        feed(jsonFeeder)
-          .exec(http("Load Product Page - #{name}")
-            .get("/product/#{slug}")
-            .check(css("#ProductDescription").is("#{description}"))
-          )
-      }
-
-      def add = {
-        exec(view)
-          .exec(http("Add product to cart")
-            .get("/cart/add/#{id}")
-            .check(substring("items in your cart"))
-          )
-          .exec(session => {
-            val currentTotal = session("cartTotal").as[Double]
-            val itemPrice = session("price").as[Double]
-            session.set("cartTotal", (currentTotal + itemPrice))
-          })
-      }
-    }
-  }
-
-  object Checkout {
-    def viewCart = {
-      doIf(session => !session("customerLoggedIn").as[Boolean]) {
-        exec(Customer.login)
-      }
-        .exec(http("View Cart")
-          .get("/cart/view")
-          .check(css("#grandTotal").is("$#{cartTotal}"))
-        )
-    }
-
-    def completeCheckout = {
-      exec(
-        http("Checkout")
-          .get("/cart/checkout")
-          .check(substring("Thanks for your order! See you soon!"))
-      )
-    }
-  }
-
-  object Customer {
-    def login = {
-      feed(loginFeeder)
-        .exec(http("Load Login Page")
-          .get("/login")
-          .check(substring("Username:")))
-        .exec(
-          http("Login User - #{username}")
-            .post("/login")
-            .formParam("_csrf", "#{csrfValue}")
-            .formParam("username", "#{username}")
-            .formParam("password", "#{password}")
-        )
-        .exec(session => session.set("customerLoggedIn", true))
-    }
-  }
-
-  private val scn = scenario("demostore.RecordedDemostore")
+  private val scn = scenario("Recorded Demostore")
     .exec(initSession)
     .exec(CmsPages.homePage)
     .pause(1)
@@ -141,5 +62,106 @@ class RecordedDemostore extends Simulation {
     .pause(1)
     .exec(Checkout.completeCheckout)
 
-  setUp(scn.inject(atOnceUsers(1))).protocols(httpProtocol)
+  object UserJourneys {
+    def minPause = 100.milliseconds
+
+    def maxPause = 500.milliseconds
+
+    def browseStore = {
+      exec(initSession)
+        .exec(CmsPages.homePage)
+        .pause(maxPause)
+        .exec(CmsPages.aboutUsPage)
+        .pause(minPause, maxPause)
+        .repeat(5) {
+          exec(Catalog.Category.view)
+            .pause(maxPause)
+            .exec(Catalog.Product.view)
+            .pause(minPause, maxPause)
+        }
+    }
+
+    def abandonCart = {
+      exec(initSession)
+        .exec(CmsPages.homePage)
+        .pause(maxPause)
+        .exec(Catalog.Category.view)
+        .pause(minPause, maxPause)
+        .exec(Catalog.Product.view)
+        .pause(minPause, maxPause)
+        .exec(Catalog.Product.add)
+    }
+
+    def completePurchase = {
+      exec(initSession)
+        .exec(CmsPages.homePage)
+        .pause(maxPause)
+        .exec(Catalog.Category.view)
+        .pause(minPause, maxPause)
+        .exec(Catalog.Product.view)
+        .pause(minPause, maxPause)
+        .exec(Catalog.Product.add)
+        .pause(minPause, maxPause)
+        .exec(Checkout.viewCart)
+        .pause(minPause, maxPause)
+        .exec(Checkout.completeCheckout)
+    }
+  }
+
+  object Scenarios {
+    def default = scenario("Default Load Test")
+      .during(testDuration) {
+        randomSwitch(
+          75d -> exec(UserJourneys.browseStore),
+          15d -> exec(UserJourneys.abandonCart),
+          10d -> exec(UserJourneys.completePurchase)
+        )
+      }
+
+    def highPurchase = scenario("High Purchase Scenario")
+      .during(testDuration) {
+        randomSwitch(
+          30d -> exec(UserJourneys.browseStore),
+          30d -> exec(UserJourneys.abandonCart),
+          40d -> exec(UserJourneys.completePurchase)
+        )
+      }
+  }
+
+  setUp(Scenarios.default
+    .inject(rampUsers(userCount).during(rampDuration))
+    .protocols(httpProtocol)
+    .andThen(Scenarios.highPurchase                      // remove andThen and paste comma for parallel simulation
+      .inject(rampUsers(userCount).during(rampDuration))
+      .protocols(httpProtocol)))
+
+  // Open Model Simulation
+  //  setUp(scn.inject(
+  //      atOnceUsers(3),
+  //      nothingFor(5),
+  //      rampUsers(5).during(10),
+  //      nothingFor(5),
+  //      constantUsersPerSec(1).during(20)
+  //    ).protocols(httpProtocol)
+  //  )
+
+  // Closed Model Simulation
+  //  setUp(
+  //    scn.inject(
+  //      constantConcurrentUsers(10).during(20),
+  //      rampConcurrentUsers(10).to(20).during(20)
+  //    ).protocols(httpProtocol)
+  //  )
+
+  // Throttling Simulation
+  //setUp(
+  //  scn.inject(
+  //    constantUsersPerSec(1).during(90)
+  //  ).protocols(httpProtocol)
+  //).throttle(
+  //  reachRps(10).in(20),
+  //  holdFor(20),
+  //  jumpToRps(20),
+  //  holdFor(20)
+  //).maxDuration(90)
 }
