@@ -13,9 +13,9 @@ class RecordedDemostore extends Simulation {
   private val httpProtocol = http
     .baseUrl(s"http://${DOMAIN}")
 
-  def userCount = getProperty("USERS", "10").toInt
+  def userCount = getProperty("USERS", "5").toInt
   def rampDuration = getProperty("RAMP_DURATION", "10").toInt
-  def testDuration = getProperty("TEST_DURATION", "40").toInt
+  def testDuration = getProperty("TEST_DURATION", "30").toInt
 
   private def getProperty(propertyName: String, defaultValue: String) = {
     Option(System.getenv(propertyName))
@@ -133,7 +133,11 @@ class RecordedDemostore extends Simulation {
     .protocols(httpProtocol)
     .andThen(Scenarios.highPurchase                      // remove andThen and paste comma for parallel simulation
       .inject(rampUsers(userCount).during(rampDuration))
-      .protocols(httpProtocol)))
+      .protocols(httpProtocol))
+  ).assertions(
+    global.responseTime.max.lt(3),
+    global.successfulRequests.percent.gt(99)
+  )
 
   // Open Model Simulation
   //  setUp(scn.inject(
